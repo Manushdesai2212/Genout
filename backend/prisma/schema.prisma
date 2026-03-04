@@ -1,0 +1,170 @@
+// Prisma schema for Genout application
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           Int       @id @default(autoincrement())
+  name         String
+  email        String    @unique
+  passwordHash String
+  createdAt    DateTime  @default(now())
+
+  groups       Group[]   @relation("OwnerGroups")
+  memberships  GroupMember[]
+  votes        Vote[]
+  expensesPaid Expense[] @relation("PaidBy")
+  expenseSplits ExpenseSplit[]
+  settlementsFrom Settlement[] @relation("FromUser")
+  settlementsTo   Settlement[] @relation("ToUser")
+  createdPlans Plan[]   @relation("CreatedPlans")
+}
+
+model Group {
+  id         Int           @id @default(autoincrement())
+  name       String
+  inviteCode String        @unique
+  ownerId    Int
+  owner      User          @relation("OwnerGroups", fields: [ownerId], references: [id])
+
+  members    GroupMember[]
+  plans      Plan[]
+}
+
+model GroupMember {
+  groupId  Int
+  userId   Int
+  role     Role
+  joinedAt DateTime @default(now())
+
+  group Group @relation(fields: [groupId], references: [id])
+  user  User  @relation(fields: [userId], references: [id])
+
+  @@id([groupId, userId])
+}
+
+enum Role {
+  OWNER
+  MEMBER
+}
+
+model Plan {
+  id            Int        @id @default(autoincrement())
+  groupId       Int
+  title         String
+  type          PlanType
+  status        PlanStatus @default(DRAFT)
+  finalPlace    String?
+  finalTime     String?   // stored as text (could be datetime string)
+  finalActivity String?
+  createdBy     Int
+  createdAt     DateTime   @default(now())
+
+  group   Group @relation(fields: [groupId], references: [id])
+  creator User  @relation("CreatedPlans", fields: [createdBy], references: [id])
+
+  polls     Poll[]
+  expenses  Expense[]
+  settlements Settlement[]
+}
+
+enum PlanType {
+  MOVIE
+  CAFE
+  NUKAD
+  OTHER
+}
+
+enum PlanStatus {
+  DRAFT
+  VOTING
+  FINALIZED
+}
+
+model Poll {
+  id       Int       @id @default(autoincrement())
+  planId   Int
+  category PollCategory
+  isOpen   Boolean   @default(true)
+
+  plan    Plan @relation(fields: [planId], references: [id])
+  options PollOption[]
+  votes   Vote[]
+}
+
+enum PollCategory {
+  PLACE
+  TIME
+  ACTIVITY
+}
+
+
+model Vote {
+  id       Int @id @default(autoincrement())
+  pollId   Int
+  optionId Int
+  userId   Int
+
+  poll   Poll       @relation(fields: [pollId], references: [id])
+  option PollOption @relation("OptionVotes", fields: [optionId], references: [id])
+  user   User       @relation(fields: [userId], references: [id])
+
+  @@unique([pollId, userId])
+}
+
+model PollOption {
+  id        Int    @id @default(autoincrement())
+  pollId    Int
+  label     String
+  sortOrder Int
+
+  poll Poll @relation(fields: [pollId], references: [id])
+  votes Vote[] @relation("OptionVotes")
+
+  @@unique([pollId, label])
+}
+
+model Expense {
+  id       Int      @id @default(autoincrement())
+  planId   Int
+  paidBy   Int
+  amount   Float
+  currency String   @default("INR")
+  category String
+  note     String?
+  createdAt DateTime @default(now())
+
+  plan        Plan @relation(fields: [planId], references: [id])
+  payer       User @relation("PaidBy", fields: [paidBy], references: [id])
+  splits      ExpenseSplit[]
+}
+
+model ExpenseSplit {
+  expenseId  Int
+  userId     Int
+  shareAmount Float
+
+  expense Expense @relation(fields: [expenseId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@id([expenseId, userId])
+}
+
+model Settlement {
+  id          Int      @id @default(autoincrement())
+  planId      Int
+  fromUserId  Int
+  toUserId    Int
+  amount      Float
+  createdAt   DateTime @default(now())
+
+  plan      Plan @relation(fields: [planId], references: [id])
+  fromUser  User @relation("FromUser", fields: [fromUserId], references: [id])
+  toUser    User @relation("ToUser", fields: [toUserId], references: [id])
+}
