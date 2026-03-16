@@ -9,6 +9,7 @@ export const addExpense = async (req: Request, res: Response) => {
     currency: z.string().optional(),
     category: z.string(),
     note: z.string().optional(),
+    description: z.string().optional(),
     splitType: z.enum(["equal","custom","selected"]).optional(),
     participants: z.array(z.number()).optional(),
     customShares: z.array(z.object({ userId: z.number(), shareAmount: z.number() })).optional(),
@@ -19,10 +20,12 @@ export const addExpense = async (req: Request, res: Response) => {
     currency = "INR",
     category,
     note,
+    description,
     splitType = "equal",
     participants,
     customShares,
   } = schema.parse(req.body);
+  const noteToUse = note || description;
   const paidBy = req.user.id;
 
   // compute splits
@@ -61,7 +64,7 @@ export const addExpense = async (req: Request, res: Response) => {
       amount,
       currency,
       category,
-      note,
+      note: noteToUse,
       paidBy,
       splits: {
         create: splitsData,

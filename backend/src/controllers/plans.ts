@@ -7,7 +7,7 @@ export const createPlan = async (req: Request, res: Response) => {
   const { groupId, title, type } = schema.parse(req.body);
   const createdBy = req.user.id;
   const plan = await prisma.plan.create({
-    data: { groupId, title, type, createdBy }
+    data: { groupId, title, type, createdBy, status: "VOTING" }
   });
   res.json(plan);
 };
@@ -37,7 +37,7 @@ export const getHistory = async (req: Request, res: Response) => {
   const plans = await prisma.plan.findMany({
     where: {
       groupId: { in: groupIds },
-      status: 'FINALIZED'
+      status: { in: ['VOTING', 'FINALIZED'] },
     },
     orderBy: { createdAt: 'desc' } as any,
     include: { expenses: true }
@@ -60,15 +60,60 @@ import { computeSettlements } from "../services/settlement";
 
 export const getPlan = async (req: Request, res: Response) => {
   const planId = parseInt(req.params.planId);
+  const userId = req.user.id;
+
   const plan = await prisma.plan.findUnique({
     where: { id: planId },
     include: {
-      polls: { include: { options: true } },
-      expenses: true,
-      settlements: true
-    }
+      polls: {
+        include: {
+          options: { include: { votes: true } },
+          votes: true,
+        },
+      },
+      expenses: {
+        include: { splits: true, payer: true },
+      },
+      settlements: true,
+      group: {
+        include: {
+          members: {
+            include: { user: true },
+          },
+        },
+      },
+    },
   });
-  res.json(plan);
+
+  if (!plan) {
+    return res.status(404).json({ message: 'Plan not found' });
+  }
+
+  const transformedPolls = plan.polls.map((poll) => {
+    const options = poll.options.map((opt) => ({
+      id: opt.id,
+      label: opt.label,
+      sortOrder: opt.sortOrder,
+      votes: opt.votes?.length ?? 0,
+    }));
+
+    const userVoteOptionId = poll.votes.find((v) => v.userId === userId)?.optionId || null;
+
+    return {
+      id: poll.id,
+      category: poll.category,
+      isOpen: poll.isOpen,
+      options,
+      userVoteOptionId,
+    };
+  });
+
+  const transformedPlan = {
+    ...plan,
+    polls: transformedPolls,
+  };
+
+  res.json(transformedPlan);
 };
 
 export const finalizePlan = async (req: Request, res: Response) => {

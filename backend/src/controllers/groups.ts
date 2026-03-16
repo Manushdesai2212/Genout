@@ -62,3 +62,53 @@ export const getMembers = async (req: Request, res: Response) => {
   });
   res.json(members);
 };
+
+export const deleteGroup = async (req: Request, res: Response) => {
+  const groupId = parseInt(req.params.groupId);
+  const userId = req.user.id;
+
+  const group = await prisma.group.findUnique({ where: { id: groupId } });
+  if (!group) return res.status(404).json({ message: "Group not found" });
+
+  const membership = await prisma.groupMember.findUnique({
+    where: { groupId_userId: { groupId, userId } }
+  });
+  if (!membership || membership.role !== "OWNER") {
+    return res.status(403).json({ message: "Not authorized" });
+  }
+
+  // delete all related data (plans, expenses, polls, settlements, memberships)
+  const plans = await prisma.plan.findMany({ where: { groupId }, select: { id: true } });
+  const planIds = plans.map((p) => p.id);
+
+  const ops: any[] = [];
+
+  if (planIds.length > 0) {
+    const expenses = await prisma.expense.findMany({ where: { planId: { in: planIds } }, select: { id: true } });
+    const expenseIds = expenses.map((e) => e.id);
+
+    const polls = await prisma.poll.findMany({ where: { planId: { in: planIds } }, select: { id: true } });
+    const pollIds = polls.map((p) => p.id);
+
+    if (planIds.length) {
+      ops.push(prisma.settlement.deleteMany({ where: { planId: { in: planIds } } }));
+    }
+    if (pollIds.length) {
+      ops.push(prisma.vote.deleteMany({ where: { pollId: { in: pollIds } } }));
+      ops.push(prisma.pollOption.deleteMany({ where: { pollId: { in: pollIds } } }));
+      ops.push(prisma.poll.deleteMany({ where: { id: { in: pollIds } } }));
+    }
+    if (expenseIds.length) {
+      ops.push(prisma.expenseSplit.deleteMany({ where: { expenseId: { in: expenseIds } } }));
+      ops.push(prisma.expense.deleteMany({ where: { id: { in: expenseIds } } }));
+    }
+    ops.push(prisma.plan.deleteMany({ where: { id: { in: planIds } } }));
+  }
+
+  ops.push(prisma.groupMember.deleteMany({ where: { groupId } }));
+  ops.push(prisma.group.delete({ where: { id: groupId } }));
+
+  await prisma.$transaction(ops);
+
+  res.json({ message: "Group deleted" });
+};

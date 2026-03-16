@@ -4,9 +4,24 @@ import { z } from "zod";
 import { io } from "../index";
 
 export const createPoll = async (req: Request, res: Response) => {
-  const schema = z.object({ planId: z.number(), category: z.enum(["PLACE","TIME","ACTIVITY"]) });
-  const { planId, category } = schema.parse(req.body);
-  const poll = await prisma.poll.create({ data: { planId, category } });
+  const schema = z.object({
+    planId: z.number(),
+    category: z.enum(["PLACE","TIME","ACTIVITY"]),
+    options: z.array(z.string()).min(2),
+  });
+  const { planId, category, options } = schema.parse(req.body);
+
+  const poll = await prisma.poll.create({
+    data: {
+      planId,
+      category,
+      options: {
+        create: options.map((label, index) => ({ label, sortOrder: index })),
+      },
+    },
+    include: { options: true },
+  });
+
   io.to(`plan_${planId}`).emit('pollCreated', poll);
   res.json(poll);
 };

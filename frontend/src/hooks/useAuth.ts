@@ -16,18 +16,26 @@ export const useAuth = () => {
   };
 
   useEffect(() => {
+    const token = localStorage.getItem('accessToken');
+    if (!token) {
+      setUser(null);
+      return;
+    }
+
     fetchMe();
   }, []);
 
   const login = async (email: string, password: string) => {
     const res = await api.post('/auth/login', { email, password });
     localStorage.setItem('accessToken', res.data.accessToken);
-    fetchMe();
+    localStorage.setItem('refreshToken', res.data.refreshToken);
+    await fetchMe();
   };
 
   const logout = async () => {
     await api.post('/auth/logout');
     localStorage.removeItem('accessToken');
+    localStorage.removeItem('refreshToken');
     setUser(null);
   };
 

@@ -9,6 +9,7 @@ interface FormInputProps {
   placeholder?: string;
   error?: string;
   required?: boolean;
+  autoComplete?: string;
 }
 
 const FormInput: React.FC<FormInputProps> = ({
@@ -20,6 +21,7 @@ const FormInput: React.FC<FormInputProps> = ({
   placeholder,
   error,
   required = false,
+  autoComplete = "off"
 }) => {
   return (
     <div className="mb-4">
@@ -38,6 +40,10 @@ const FormInput: React.FC<FormInputProps> = ({
         value={value}
         onChange={onChange}
         placeholder={placeholder}
+        autoComplete={autoComplete}
+        autoCorrect="on"
+        autoCapitalize="off"
+        spellCheck={false}
         className={`
           w-full px-4 py-2 rounded-lg bg-gray-700 text-white placeholder-gray-500
           border transition-colors duration-200

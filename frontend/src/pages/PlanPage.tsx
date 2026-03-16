@@ -10,16 +10,20 @@ import { io as clientIo, Socket } from 'socket.io-client';
 
 interface Poll {
   id: number;
-  question: string;
-  options: Array<{ id: number; text: string; votes: number }>;
+  category: string;
+  isOpen: boolean;
+  userVoteOptionId: number | null;
+  options: Array<{ id: number; label: string; votes: number }>;
 }
 
 interface Expense {
   id: number;
   amount: number;
-  description: string;
+  note?: string;
   category: string;
-  paidBy: { id: number; name: string };
+  paidBy?: { id: number; name: string };
+  payer?: { id: number; name: string };
+  splits?: Array<{ userId: number; shareAmount: number }>;
 }
 
 interface Settlement {
@@ -34,7 +38,14 @@ interface PlanData {
   title: string;
   type: string;
   status: string;
-  createdBy: { id: number; name: string };
+  createdBy?: any;
+  group?: {
+    members: Array<{
+      userId: number;
+      role: string;
+      user: { id: number; name: string; email?: string };
+    }>;
+  };
   polls: Poll[];
   expenses: Expense[];
   settlements: Settlement[];
@@ -52,13 +63,16 @@ const PlanPage: React.FC = () => {
   const [expenseModalOpen, setExpenseModalOpen] = useState(false);
   
   // Poll form
-  const [pollQuestion, setPollQuestion] = useState('');
+  const [pollCategory, setPollCategory] = useState<'PLACE' | 'TIME' | 'ACTIVITY'>('PLACE');
   const [pollOptions, setPollOptions] = useState(['', '']);
   
   // Expense form
   const [expenseAmount, setExpenseAmount] = useState('');
   const [expenseDesc, setExpenseDesc] = useState('');
   const [expenseCategory, setExpenseCategory] = useState('FOOD');
+  const [splitType, setSplitType] = useState<'equal' | 'selected' | 'custom'>('equal');
+  const [selectedUsers, setSelectedUsers] = useState<number[]>([]);
+  const [customShares, setCustomShares] = useState<Record<number, string>>({});
 
   useEffect(() => {
     fetchPlan();
@@ -91,22 +105,18 @@ const PlanPage: React.FC = () => {
   };
 
   const handleCreatePoll = async () => {
-    if (!pollQuestion.trim()) {
-      setError('Poll question is required');
-      return;
-    }
     const validOptions = pollOptions.filter((o) => o.trim());
     if (validOptions.length < 2) {
       setError('At least 2 poll options are required');
       return;
     }
+
     try {
       await api.post('/polls', {
         planId: parseInt(id!),
-        question: pollQuestion,
+        category: pollCategory,
         options: validOptions,
       });
-      setPollQuestion('');
       setPollOptions(['', '']);
       setPollModalOpen(false);
       setError('');
@@ -119,9 +129,10 @@ const PlanPage: React.FC = () => {
   const handleVote = async (pollId: number, optionId: number) => {
     try {
       await api.post(`/polls/${pollId}/vote`, { optionId });
-      fetchPlan();
-    } catch (err) {
-      setError('Failed to vote');
+      await fetchPlan();
+    } catch (err: any) {
+      console.error('Vote error', err);
+      setError(err?.response?.data?.message || 'Failed to vote');
     }
   };
 
@@ -130,16 +141,58 @@ const PlanPage: React.FC = () => {
       setError('Amount and description are required');
       return;
     }
+
+    const amountNum = parseFloat(expenseAmount);
+    if (Number.isNaN(amountNum) || amountNum <= 0) {
+      setError('Amount must be a valid number');
+      return;
+    }
+
+    const members = plan?.group?.members ?? [];
+
+    const payload: any = {
+      planId: parseInt(id!),
+      amount: amountNum,
+      note: expenseDesc,
+      category: expenseCategory,
+      splitType,
+    };
+
+    if (splitType === 'selected') {
+      if (selectedUsers.length === 0) {
+        setError('Select at least one participant for the split');
+        return;
+      }
+      payload.participants = selectedUsers;
+    }
+
+    if (splitType === 'custom') {
+      const shares = Object.entries(customShares)
+        .map(([userId, share]) => ({ userId: parseInt(userId), shareAmount: parseFloat(share) }))
+        .filter((s) => !Number.isNaN(s.shareAmount));
+
+      if (shares.length === 0) {
+        setError('Enter custom share amounts');
+        return;
+      }
+
+      const total = shares.reduce((acc, s) => acc + s.shareAmount, 0);
+      if (Math.abs(total - amountNum) > 0.01) {
+        setError('Custom shares must sum to total amount');
+        return;
+      }
+
+      payload.customShares = shares;
+    }
+
     try {
-      await api.post('/expenses', {
-        planId: parseInt(id!),
-        amount: parseFloat(expenseAmount),
-        description: expenseDesc,
-        category: expenseCategory,
-      });
+      await api.post('/expenses', payload);
       setExpenseAmount('');
       setExpenseDesc('');
       setExpenseCategory('FOOD');
+      setSplitType('equal');
+      setSelectedUsers([]);
+      setCustomShares({});
       setExpenseModalOpen(false);
       setError('');
       fetchPlan();
@@ -215,7 +268,7 @@ const PlanPage: React.FC = () => {
             <div className="lg:col-span-2">
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-2xl font-bold text-white">Polls</h2>
-                {plan.status === 'VOTING' && (
+                {plan.status !== 'FINALIZED' && (
                   <Button variant="primary" onClick={() => setPollModalOpen(true)}>
                     + Add Poll
                   </Button>
@@ -229,20 +282,32 @@ const PlanPage: React.FC = () => {
                 ) : (
                   plan.polls.map((poll) => (
                     <Card key={poll.id}>
-                      <h3 className="text-lg font-bold text-white mb-4">{poll.question}</h3>
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-lg font-bold text-white">
+                          Vote for <span className="uppercase">{poll.category}</span>
+                        </h3>
+                        {!poll.isOpen && (
+                          <span className="text-xs bg-gray-700 text-gray-300 px-2 py-1 rounded">
+                            Closed
+                          </span>
+                        )}
+                      </div>
                       <div className="space-y-3">
-                        {poll.options.map((option) => (
-                          <button
-                            key={option.id}
-                            onClick={() => handleVote(poll.id, option.id)}
-                            className="w-full text-left p-3 rounded-lg bg-gray-700 hover:bg-gray-600 transition border border-gray-600 hover:border-blue-500"
-                          >
-                            <div className="flex justify-between items-center">
-                              <span className="text-white">{option.text}</span>
-                              <span className="text-sm text-gray-400">{option.votes} votes</span>
-                            </div>
-                          </button>
-                        ))}
+                        {poll.options.map((option) => {
+                          const isSelected = poll.userVoteOptionId === option.id;
+                          return (
+                            <button
+                              key={option.id}
+                              onClick={() => handleVote(poll.id, option.id)}
+                              className={`w-full text-left p-3 rounded-lg bg-gray-700 hover:bg-gray-600 transition border border-gray-600 hover:border-blue-500 ${isSelected ? 'border-blue-400 bg-blue-800' : ''}`}
+                            >
+                              <div className="flex justify-between items-center">
+                                <span className="text-white">{option.label}</span>
+                                <span className="text-sm text-gray-400">{option.votes} votes</span>
+                              </div>
+                            </button>
+                          );
+                        })}
                       </div>
                     </Card>
                   ))
@@ -254,7 +319,7 @@ const PlanPage: React.FC = () => {
             <div>
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-2xl font-bold text-white">Expenses</h2>
-                {plan.status === 'VOTING' && (
+                {plan.status !== 'FINALIZED' && (
                   <Button variant="primary" onClick={() => setExpenseModalOpen(true)}>
                     + Add
                   </Button>
@@ -265,18 +330,36 @@ const PlanPage: React.FC = () => {
                   {plan.expenses.length === 0 ? (
                     <p className="text-gray-400 text-center py-4">No expenses yet</p>
                   ) : (
-                    plan.expenses.map((expense) => (
-                      <div key={expense.id} className="p-3 rounded bg-gray-700 border border-gray-600">
-                        <div className="flex justify-between items-start mb-1">
-                          <span className="text-white font-medium text-sm">{expense.description}</span>
-                          <span className="text-lg font-bold text-blue-400">₹{expense.amount.toFixed(2)}</span>
+                    plan.expenses.map((expense) => {
+                      const memberNameById = new Map<number, string>(
+                        plan.group?.members?.map((m) => [m.userId, m.user.name]) ?? []
+                      );
+                      return (
+                        <div key={expense.id} className="p-3 rounded bg-gray-700 border border-gray-600">
+                          <div className="flex justify-between items-start mb-1">
+                            <span className="text-white font-medium text-sm">{expense.note || 'Expense'}</span>
+                            <span className="text-lg font-bold text-blue-400">₹{expense.amount.toFixed(2)}</span>
+                          </div>
+                          <div className="flex gap-2 text-xs mb-2">
+                            <span className="text-gray-400">Paid by: {expense.payer?.name || expense.paidBy?.name || 'Unknown'}</span>
+                            <span className="text-gray-500">{expense.category}</span>
+                          </div>
+                          {expense.splits && expense.splits.length > 0 && (
+                            <div className="text-xs text-gray-300">
+                              <div className="font-semibold text-gray-200 mb-1">Split:</div>
+                              <div className="space-y-1">
+                                {expense.splits.map((split) => (
+                                  <div key={split.userId} className="flex justify-between">
+                                    <span>{memberNameById.get(split.userId) ?? 'Unknown'}</span>
+                                    <span>₹{split.shareAmount.toFixed(2)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
-                        <div className="flex gap-2 text-xs">
-                          <span className="text-gray-400">{expense.paidBy.name}</span>
-                          <span className="text-gray-500">{expense.category}</span>
-                        </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </Card>
@@ -305,7 +388,7 @@ const PlanPage: React.FC = () => {
           )}
 
           {/* Finalize Button */}
-          {plan.status === 'VOTING' && (
+          {plan.status !== 'FINALIZED' && (
             <div className="mt-6 flex justify-center">
               <Button
                 variant="primary"
@@ -325,19 +408,26 @@ const PlanPage: React.FC = () => {
         title="Create Poll"
         onClose={() => {
           setPollModalOpen(false);
-          setPollQuestion('');
+          setPollCategory('PLACE');
           setPollOptions(['', '']);
           setError('');
         }}
       >
-        <FormInput
-          label="Poll Question"
-          name="question"
-          value={pollQuestion}
-          onChange={(e) => setPollQuestion(e.target.value)}
-          placeholder="Where should we eat?"
-          required
-        />
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            Poll Type
+          </label>
+          <select
+            value={pollCategory}
+            onChange={(e) => setPollCategory(e.target.value as any)}
+            className="w-full px-4 py-2 rounded-lg bg-gray-700 text-white border border-gray-600 focus:border-blue-500 focus:outline-none"
+          >
+            <option value="PLACE">Place</option>
+            <option value="TIME">Time</option>
+            <option value="ACTIVITY">Activity</option>
+          </select>
+        </div>
+
         <div className="mb-4">
           <label className="block text-sm font-medium text-gray-300 mb-2">
             Options
@@ -364,6 +454,7 @@ const PlanPage: React.FC = () => {
             + Add Option
           </Button>
         </div>
+
         <div className="flex gap-2 mt-6">
           <Button variant="primary" className="flex-1" onClick={handleCreatePoll}>
             Create
@@ -373,7 +464,7 @@ const PlanPage: React.FC = () => {
             className="flex-1"
             onClick={() => {
               setPollModalOpen(false);
-              setPollQuestion('');
+              setPollCategory('PLACE');
               setPollOptions(['', '']);
               setError('');
             }}
@@ -428,6 +519,73 @@ const PlanPage: React.FC = () => {
             <option value="OTHER">Other</option>
           </select>
         </div>
+
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            Split Type
+          </label>
+          <select
+            value={splitType}
+            onChange={(e) => {
+              const val = e.target.value as 'equal' | 'selected' | 'custom';
+              setSplitType(val);
+              setSelectedUsers([]);
+              setCustomShares({});
+            }}
+            className="w-full px-4 py-2 rounded-lg bg-gray-700 text-white border border-gray-600 focus:border-blue-500 focus:outline-none"
+          >
+            <option value="equal">Equal (all members)</option>
+            <option value="selected">Selected participants</option>
+            <option value="custom">Custom shares</option>
+          </select>
+        </div>
+
+        {splitType !== 'equal' && (
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-300 mb-2">
+              {splitType === 'selected' ? 'Select participants' : 'Custom shares'}
+            </label>
+            <div className="space-y-2">
+              {(plan?.group?.members ?? []).map((member) => (
+                <div key={member.userId} className="flex items-center gap-2">
+                  {splitType === 'selected' ? (
+                    <>
+                      <input
+                        type="checkbox"
+                        checked={selectedUsers.includes(member.userId)}
+                        onChange={(e) => {
+                          const next = new Set(selectedUsers);
+                          if (e.target.checked) {
+                            next.add(member.userId);
+                          } else {
+                            next.delete(member.userId);
+                          }
+                          setSelectedUsers(Array.from(next));
+                        }}
+                        className="h-4 w-4 text-blue-500 bg-gray-700 border-gray-600 rounded"
+                      />
+                      <span className="text-gray-200">{member.user.name}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-gray-200 flex-1">{member.user.name}</span>
+                      <input
+                        type="number"
+                        value={customShares[member.userId] ?? ''}
+                        onChange={(e) =>
+                          setCustomShares((prev) => ({ ...prev, [member.userId]: e.target.value }))
+                        }
+                        placeholder="0"
+                        className="w-24 px-3 py-2 rounded-lg bg-gray-700 text-white border border-gray-600 focus:border-blue-500 focus:outline-none"
+                      />
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="flex gap-2 mt-6">
           <Button variant="primary" className="flex-1" onClick={handleAddExpense}>
             Add

@@ -6,6 +6,7 @@ import Card from '../components/Card';
 import Button from '../components/Button';
 import FormInput from '../components/FormInput';
 import Modal from '../components/Modal';
+import { useAuth } from '../hooks/useAuth';
 
 interface GroupMember {
   userId: number;
@@ -31,6 +32,7 @@ interface GroupData {
 const GroupPage: React.FC = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [group, setGroup] = useState<GroupData | null>(null);
   const [loading, setLoading] = useState(true);
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -54,6 +56,11 @@ const GroupPage: React.FC = () => {
     }
   };
 
+  const isOwner = Boolean(
+    user &&
+      group?.members?.some((m) => m.role === 'OWNER' && m.userId === user.id)
+  );
+
   const handleCreatePlan = async () => {
     if (!planTitle.trim()) {
       setError('Plan title is required');
@@ -72,6 +79,16 @@ const GroupPage: React.FC = () => {
       fetchGroup();
     } catch (err) {
       setError('Failed to create plan');
+    }
+  }; 
+
+  const handleDeleteGroup = async () => {
+    if (!window.confirm('Delete this group? This will remove all plans and expenses.')) return;
+    try {
+      await api.delete(`/groups/${id}`);
+      navigate('/dashboard');
+    } catch (err) {
+      setError('Failed to delete group');
     }
   };
 
@@ -108,9 +125,16 @@ const GroupPage: React.FC = () => {
               <h1 className="text-4xl font-bold text-white mb-2">{group.name}</h1>
               <p className="text-gray-400">Invite code: <code className="bg-gray-700 px-2 py-1 rounded">{group.inviteCode}</code></p>
             </div>
-            <Button variant="secondary" onClick={() => navigate('/dashboard')}>
-              Back to Groups
-            </Button>
+            <div className="flex items-center gap-2">
+              {isOwner && (
+                <Button variant="danger" onClick={handleDeleteGroup}>
+                  Delete Group
+                </Button>
+              )}
+              <Button variant="secondary" onClick={() => navigate('/dashboard')}>
+                Back to Groups
+              </Button>
+            </div>
           </div>
 
           {error && (
