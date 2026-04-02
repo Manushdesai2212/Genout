@@ -19,6 +19,7 @@ model User {
   groups       Group[]   @relation("OwnerGroups")
   memberships  GroupMember[]
   votes        Vote[]
+  planVotes    PlanVote[]
   expensesPaid Expense[] @relation("PaidBy")
   expenseSplits ExpenseSplit[]
   settlementsFrom Settlement[] @relation("FromUser")
@@ -70,6 +71,7 @@ model Plan {
   creator User  @relation("CreatedPlans", fields: [createdBy], references: [id])
 
   polls     Poll[]
+  planVotes PlanVote[]
   expenses  Expense[]
   settlements Settlement[]
 }
@@ -116,6 +118,24 @@ model Vote {
   user   User       @relation(fields: [userId], references: [id])
 
   @@unique([pollId, userId])
+}
+
+model PlanVote {
+  id        Int           @id @default(autoincrement())
+  planId    Int
+  userId    Int
+  value     PlanVoteValue
+  createdAt DateTime      @default(now())
+
+  plan Plan @relation(fields: [planId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([planId, userId])
+}
+
+enum PlanVoteValue {
+  YES
+  NO
 }
 
 model PollOption {

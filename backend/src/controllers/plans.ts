@@ -23,103 +23,155 @@ export const listPlans = async (req: Request, res: Response) => {
     where,
     skip: (pageNum - 1) * sizeNum,
     take: sizeNum,
-    orderBy: { createdAt: 'desc' } as any,
+    orderBy: { createdAt: 'desc' },
     include: { expenses: true }
   });
   res.json(plans);
 };
 
-export const getHistory = async (req: Request, res: Response) => {
-  // returns summary of past finalized plans the user has participated in
+export const getPlanHistory = async (req: Request, res: Response) => {
   const userId = req.user.id;
-  const memberships = await prisma.groupMember.findMany({ where: { userId }, select: { groupId: true } });
-  const groupIds = memberships.map((m) => m.groupId);
+
   const plans = await prisma.plan.findMany({
     where: {
-      groupId: { in: groupIds },
-      status: { in: ['VOTING', 'FINALIZED'] },
+      group: {
+        members: {
+          some: { userId },
+        },
+      },
     },
-    orderBy: { createdAt: 'desc' } as any,
-    include: { expenses: true }
+    orderBy: { createdAt: "desc" },
+    include: {
+      expenses: {
+        select: { amount: true },
+      },
+    },
   });
 
-  const summary = plans.map((p: any) => {
-    const totalExpense = (p.expenses || []).reduce((acc: number, e: any) => acc + e.amount, 0);
-    return {
-      id: p.id,
-      title: p.title,
-      status: p.status,
-      createdAt: p.createdAt,
-      totalExpense
-    };
-  });
-  res.json(summary);
+  const history = plans.map((plan) => ({
+    id: plan.id,
+    title: plan.title,
+    status: plan.status,
+    createdAt: plan.createdAt,
+    totalExpense: plan.expenses.reduce((sum, expense) => sum + expense.amount, 0),
+  }));
+
+  res.json(history);
 };
 
 import { computeSettlements } from "../services/settlement";
 
 export const getPlan = async (req: Request, res: Response) => {
   const planId = parseInt(req.params.planId);
+  if (Number.isNaN(planId) || planId <= 0) {
+    return res.status(400).json({ message: 'Invalid planId' });
+  }
+
   const userId = req.user.id;
 
   const plan = await prisma.plan.findUnique({
     where: { id: planId },
     include: {
-      polls: {
-        include: {
-          options: { include: { votes: true } },
-          votes: true,
-        },
-      },
-      expenses: {
-        include: { splits: true, payer: true },
-      },
-      settlements: true,
-      group: {
-        include: {
-          members: {
-            include: { user: true },
-          },
-        },
-      },
-    },
+      polls: { include: { options: { include: { votes: true } }, votes: true } },
+      planVotes: true,
+      expenses: { include: { payer: true, splits: true } },
+      settlements: { include: { fromUser: true, toUser: true } },
+      group: { include: { members: { include: { user: true } } } },
+    }
   });
 
   if (!plan) {
     return res.status(404).json({ message: 'Plan not found' });
   }
 
-  const transformedPolls = plan.polls.map((poll) => {
-    const options = poll.options.map((opt) => ({
-      id: opt.id,
-      label: opt.label,
-      sortOrder: opt.sortOrder,
-      votes: opt.votes?.length ?? 0,
-    }));
+  const voteSummary = (plan.planVotes ?? []).reduce(
+    (acc, vote) => {
+      if (vote.value === "YES") acc.yesCount += 1;
+      if (vote.value === "NO") acc.noCount += 1;
+      if (vote.userId === userId) acc.myVote = vote.value;
+      return acc;
+    },
+    { yesCount: 0, noCount: 0, myVote: null as "YES" | "NO" | null }
+  );
 
-    const userVoteOptionId = poll.votes.find((v) => v.userId === userId)?.optionId || null;
+  res.json({ ...plan, voteSummary });
+};
 
-    return {
-      id: poll.id,
-      category: poll.category,
-      isOpen: poll.isOpen,
-      options,
-      userVoteOptionId,
-    };
+export const voteOnPlan = async (req: Request, res: Response) => {
+  const schema = z.object({ value: z.enum(["YES", "NO"]) });
+  const { value } = schema.parse(req.body);
+
+  const planId = parseInt(req.params.planId);
+  if (Number.isNaN(planId) || planId <= 0) {
+    return res.status(400).json({ message: 'Invalid planId' });
+  }
+
+  const userId = req.user.id;
+
+  const plan = await prisma.plan.findUnique({ where: { id: planId } });
+  if (!plan) return res.status(404).json({ message: "Plan not found" });
+
+  const membership = await prisma.groupMember.findUnique({
+    where: { groupId_userId: { groupId: plan.groupId, userId } },
+  });
+  if (!membership) {
+    return res.status(403).json({ message: "Not authorized to vote on this plan" });
+  }
+
+  const planVote = await prisma.planVote.upsert({
+    where: { planId_userId: { planId, userId } },
+    update: { value },
+    create: { planId, userId, value },
   });
 
-  const transformedPlan = {
-    ...plan,
-    polls: transformedPolls,
-  };
+  res.json(planVote);
+};
 
-  res.json(transformedPlan);
+export const deletePlan = async (req: Request, res: Response) => {
+  const planId = parseInt(req.params.planId);
+  if (Number.isNaN(planId) || planId <= 0) {
+    return res.status(400).json({ message: 'Invalid planId' });
+  }
+
+  const userId = req.user.id;
+
+  const plan = await prisma.plan.findUnique({ where: { id: planId } });
+  if (!plan) return res.status(404).json({ message: "Plan not found" });
+
+  const membership = await prisma.groupMember.findUnique({
+    where: { groupId_userId: { groupId: plan.groupId, userId } },
+  });
+
+  if (!membership || (membership.role !== "OWNER" && plan.createdBy !== userId)) {
+    return res.status(403).json({ message: "Not authorized" });
+  }
+
+  // delete dependent records in correct order
+  const polls = await prisma.poll.findMany({ where: { planId }, select: { id: true } });
+  const pollIds = polls.map((p) => p.id);
+
+  await prisma.$transaction([
+    prisma.vote.deleteMany({ where: { pollId: { in: pollIds } } }),
+    prisma.pollOption.deleteMany({ where: { pollId: { in: pollIds } } }),
+    prisma.poll.deleteMany({ where: { id: { in: pollIds } } }),
+    prisma.planVote.deleteMany({ where: { planId } }),
+    prisma.settlement.deleteMany({ where: { planId } }),
+    prisma.expenseSplit.deleteMany({ where: { expense: { planId } } }),
+    prisma.expense.deleteMany({ where: { planId } }),
+    prisma.plan.delete({ where: { id: planId } }),
+  ]);
+
+  res.json({ message: "Plan deleted" });
 };
 
 export const finalizePlan = async (req: Request, res: Response) => {
   const schema = z.object({ planId: z.string() });
   const { planId } = schema.parse(req.params);
   const pid = parseInt(planId);
+  if (Number.isNaN(pid) || pid <= 0) {
+    return res.status(400).json({ message: 'Invalid planId' });
+  }
+
   const plan = await prisma.plan.findUnique({ where: { id: pid }, include: { polls: { include: { options: true, votes: true } } } });
   if (!plan) return res.status(404).json({ message: "Plan not found" });
   // Only owner or creator can finalize
@@ -174,6 +226,9 @@ export const getSettlements = async (req: Request, res: Response) => {
   const schema = z.object({ planId: z.string() });
   const { planId } = schema.parse(req.params);
   const pid = parseInt(planId);
+  if (Number.isNaN(pid) || pid <= 0) {
+    return res.status(400).json({ message: 'Invalid planId' });
+  }
   const settlements = await prisma.settlement.findMany({ where: { planId: pid } });
   res.json(settlements);
 };

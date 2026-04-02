@@ -81,8 +81,6 @@ export const deleteGroup = async (req: Request, res: Response) => {
   const plans = await prisma.plan.findMany({ where: { groupId }, select: { id: true } });
   const planIds = plans.map((p) => p.id);
 
-  const ops: any[] = [];
-
   if (planIds.length > 0) {
     const expenses = await prisma.expense.findMany({ where: { planId: { in: planIds } }, select: { id: true } });
     const expenseIds = expenses.map((e) => e.id);
@@ -90,25 +88,35 @@ export const deleteGroup = async (req: Request, res: Response) => {
     const polls = await prisma.poll.findMany({ where: { planId: { in: planIds } }, select: { id: true } });
     const pollIds = polls.map((p) => p.id);
 
-    if (planIds.length) {
-      ops.push(prisma.settlement.deleteMany({ where: { planId: { in: planIds } } }));
-    }
-    if (pollIds.length) {
-      ops.push(prisma.vote.deleteMany({ where: { pollId: { in: pollIds } } }));
-      ops.push(prisma.pollOption.deleteMany({ where: { pollId: { in: pollIds } } }));
-      ops.push(prisma.poll.deleteMany({ where: { id: { in: pollIds } } }));
-    }
-    if (expenseIds.length) {
-      ops.push(prisma.expenseSplit.deleteMany({ where: { expenseId: { in: expenseIds } } }));
-      ops.push(prisma.expense.deleteMany({ where: { id: { in: expenseIds } } }));
-    }
-    ops.push(prisma.plan.deleteMany({ where: { id: { in: planIds } } }));
+    await prisma.$transaction(async (tx) => {
+      await tx.settlement.deleteMany({ where: { planId: { in: planIds } } });
+
+      if (pollIds.length) {
+        await tx.vote.deleteMany({ where: { pollId: { in: pollIds } } });
+        await tx.pollOption.deleteMany({ where: { pollId: { in: pollIds } } });
+        await tx.poll.deleteMany({ where: { id: { in: pollIds } } });
+      }
+
+      if (expenseIds.length) {
+        await tx.expenseSplit.deleteMany({ where: { expenseId: { in: expenseIds } } });
+        await tx.expense.deleteMany({ where: { id: { in: expenseIds } } });
+      }
+
+      await tx.planVote.deleteMany({ where: { planId: { in: planIds } } });
+      await tx.plan.deleteMany({ where: { id: { in: planIds } } });
+
+      await tx.groupMember.deleteMany({ where: { groupId } });
+      await tx.group.delete({ where: { id: groupId } });
+    });
+
+    return res.json({ message: "Group deleted" });
   }
 
-  ops.push(prisma.groupMember.deleteMany({ where: { groupId } }));
-  ops.push(prisma.group.delete({ where: { id: groupId } }));
+  // If there are no plans, just delete members + group
+  await prisma.$transaction(async (tx) => {
+    await tx.groupMember.deleteMany({ where: { groupId } });
+    await tx.group.delete({ where: { id: groupId } });
+  });
 
-  await prisma.$transaction(ops);
-
-  res.json({ message: "Group deleted" });
+  return res.json({ message: "Group deleted" });
 };
